@@ -1,7 +1,6 @@
 {
   "name": "agentation-pi",
-  "version": "0.0.1",
-  "private": true,
+  "version": "1.0.0",
   "description": "Pi extension launcher for the Agentation fix loop",
   "license": "UNLICENSED",
   "bin": {
@@ -11,5 +10,8 @@
     "agentation.ts",
     "README.md",
     "bin/agentation-pi"
-  ]
+  ],
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.61.0"
+  }
 }
