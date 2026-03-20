@@ -6,10 +6,24 @@
   "bin": {
     "agentation-pi": "./bin/agentation-pi"
   },
+  "scripts": {
+    "sync-skill": "./bin/sync-agentation-fix-loop-skill",
+    "prepack": "pnpm run sync-skill"
+  },
+  "pi": {
+    "extensions": [
+      "./agentation.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
   "files": [
     "agentation.ts",
     "README.md",
-    "bin/agentation-pi"
+    "bin/agentation-pi",
+    "bin/sync-agentation-fix-loop-skill",
+    "skills/agentation-fix-loop/SKILL.md"
   ],
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "^0.61.0"

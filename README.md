@@ -10,7 +10,8 @@ It starts automatically when the session starts and keeps re-queuing the same pr
 
 ## Behavior
 
-- Checks that `/skill:agentation-fix-loop` is available before running
+- The launcher (`bin/agentation-pi`) injects an embedded local skill via `--skill`
+- Extension checks that `/skill:agentation-fix-loop` is available before running
 - On `session_start`: starts loop and sends first prompt
 - On `agent_end`: sends the next loop prompt
 - On `session_shutdown`: stops loop automatically
@@ -23,27 +24,27 @@ It starts automatically when the session starts and keeps re-queuing the same pr
 
 ## Use it
 
-From this monorepo:
+From this workspace package (after `pnpm install`) — recommended (includes embedded skill automatically):
 
 ```bash
-pi -e ./packages/pi-agentation/agentation.ts
+pnpm --filter agentation-pi exec ./bin/agentation-pi
 ```
 
-From this workspace package (after `pnpm install`):
+From this monorepo, directly via `pi` (must pass the bundled skill path):
 
 ```bash
-pnpm --filter agentation-pi exec agentation-pi
+pi \
+  -e ./packages/pi-agentation/agentation.ts \
+  --skill ./packages/pi-agentation/skills/agentation-fix-loop/SKILL.md
 ```
 
 Pass normal Pi flags/args through it:
 
 ```bash
-pnpm --filter agentation-pi exec agentation-pi -- --list-models
+pnpm --filter agentation-pi exec ./bin/agentation-pi -- --list-models
 ```
 
-Or copy/symlink it into your Pi extensions directory for auto-discovery:
-
-- `~/.pi/agent/extensions/`
+To auto-discover both the extension and embedded skill, install this package as a Pi package (so `pi.skills` and `pi.extensions` are both loaded), instead of copying only `agentation.ts` into an extensions folder.
 
 ## Notes
 

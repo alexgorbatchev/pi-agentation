@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PACKAGE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SOURCE_SKILL="${PACKAGE_ROOT}/../../cli/cmd/agentation/embedded/agentation-fix-loop-skill.md"
+TARGET_SKILL="${PACKAGE_ROOT}/skills/agentation-fix-loop/SKILL.md"
+
+if [[ ! -f "${SOURCE_SKILL}" ]]; then
+  echo "Source skill file not found: cli/cmd/agentation/embedded/agentation-fix-loop-skill.md" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "${TARGET_SKILL}")"
+
+if cmp -s "${SOURCE_SKILL}" "${TARGET_SKILL}"; then
+  echo "Skill is already in sync"
+  exit 0
+fi
+
+cp "${SOURCE_SKILL}" "${TARGET_SKILL}"
+echo "Synced skills/agentation-fix-loop/SKILL.md from cli/cmd/agentation/embedded/agentation-fix-loop-skill.md"
