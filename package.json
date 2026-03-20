@@ -1,0 +1,15 @@
+{
+  "name": "agentation-pi",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Pi extension launcher for the Agentation fix loop",
+  "license": "UNLICENSED",
+  "bin": {
+    "agentation-pi": "./bin/agentation-pi"
+  },
+  "files": [
+    "agentation.ts",
+    "README.md",
+    "bin/agentation-pi"
+  ]
+}
