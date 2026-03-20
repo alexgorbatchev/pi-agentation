@@ -1,8 +1,8 @@
 {
-  "name": "agentation-pi",
-  "version": "1.0.0",
+  "name": "@alexgorbatchev/agentation-pi",
+  "version": "3.0.0",
   "description": "Pi extension launcher for the Agentation fix loop",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "bin": {
     "agentation-pi": "./bin/agentation-pi"
   },
