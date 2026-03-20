@@ -4,18 +4,23 @@
 
 A Pi extension that continuously runs an Agentation fix loop by repeatedly sending:
 
-- `/skill:agentation-fix-loop`
+- `/skill:agentation-fix-loop <project-id>`
 
-It starts automatically when the session starts and keeps re-queuing the same prompt after each agent run, until Pi exits (or you stop it).
+It starts automatically when the session starts, resolves the project ID for the current repository, and keeps re-queuing the same project-scoped prompt after each agent run until Pi exits (or you stop it).
 
 ## Behavior
 
 - The launcher (`bin/agentation-pi`) injects an embedded local skill via `--skill`
 - Extension checks that `/skill:agentation-fix-loop` is available before running
-- On `session_start`: starts loop and sends first prompt
-- On `agent_end`: sends the next loop prompt
+- On session start/switch/fork, the extension:
+  - runs `agentation projects --json`
+  - runs `rg` to discover literal `projectId="..."` values in the repo
+  - intersects both lists
+  - auto-starts if exactly one project matches, otherwise prompts you to choose in the TUI
+- The resolved project ID is stored in the current Pi session so reloads/resume do not re-prompt that same session
+- On `agent_end`: sends the next project-scoped loop prompt
 - On `session_shutdown`: stops loop automatically
-- If the skill is missing: plugin requests shutdown and exits with code `1`
+- If the skill is missing, no repo project IDs are found, or no discovered repo IDs are known to Agentation yet: plugin requests shutdown and exits with code `1`
 
 ## Commands
 
