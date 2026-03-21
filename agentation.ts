@@ -4,7 +4,7 @@ import process from "node:process";
 const LOOP_SKILL_NAME = "agentation-fix-loop";
 const LOOP_PROMPT = `/skill:${LOOP_SKILL_NAME}`;
 const PROJECT_SELECTION_ENTRY_TYPE = "agentation-project-selection";
-const PROJECT_ID_PATTERN = /^projectId="([^"\r\n]+)"$/;
+const PROJECT_ID_PATTERN = /^projectId=(?:"([^"\r\n]+)"|'([^'\r\n]+)')$/;
 
 type ExecResult = Awaited<ReturnType<ExtensionAPI["exec"]>>;
 
@@ -159,7 +159,7 @@ export default function agentation(pi: ExtensionAPI): void {
       "--no-filename",
       "--glob",
       "*.{tsx,jsx}",
-      'projectId="[^"]+"',
+      "projectId=(?:\"[^\"]+\"|'[^']+')",
       ".",
     ]);
 
@@ -396,8 +396,9 @@ function extractProjectIdsFromRgOutput(output: string): string[] {
     }
 
     const match = PROJECT_ID_PATTERN.exec(trimmedLine);
-    if (match?.[1] !== undefined) {
-      projectIds.push(match[1]);
+    const extractedProjectId = match?.[1] ?? match?.[2];
+    if (extractedProjectId !== undefined) {
+      projectIds.push(extractedProjectId);
     }
   }
 
