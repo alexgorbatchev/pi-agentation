@@ -25,7 +25,14 @@
     "bin/pi-agentation",
     "skills/agentation-fix-loop/SKILL.md"
   ],
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "^0.61.0"
+  },
+  "scripts": {
+    "check": "npm run verify:pi-load",
+    "verify:pi-load": "PI_OFFLINE=1 pi --no-extensions -e ./agentation.ts --list-models > /dev/null"
   }
 }
