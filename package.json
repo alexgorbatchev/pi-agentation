@@ -38,5 +38,8 @@
     "sync-skill": "node ./scripts/syncBundledSkill.js",
     "verify:package": "npm pack --dry-run > /dev/null",
     "verify:launcher": "PI_OFFLINE=1 ./bin/pi-agentation --list-models > /dev/null"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
