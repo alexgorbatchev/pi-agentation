@@ -1,20 +1,20 @@
 # Agentation Pi Plugin
 
-`packages/pi-agentation/agentation.ts`
+`agentation.ts`
 
-A Pi extension that continuously runs an Agentation fix loop by repeatedly sending:
+A pi extension that continuously runs an Agentation fix loop by repeatedly sending:
 
 - `/skill:agentation-fix-loop <project-id>`
 
-It starts automatically when the session starts, resolves the project ID for the current repository, and keeps re-queuing the same project-scoped prompt after each agent run until Pi exits (or you stop it).
+It starts automatically when the session starts, resolves the project ID for the current repository (searching for `<Agentation projectId=... />`), and keeps re-queuing the same project-scoped prompt after each agent run until pi exits (or you stop it).
 
 ## Behavior
 
-- The launcher (`bin/agentation-pi`) injects an embedded local skill via `--skill`
+- The launcher (`pi-agentation`) injects the vendored local skill via `--skill`
 - Extension checks that `/skill:agentation-fix-loop` is available before running
 - On session start/switch/fork, the extension:
   - runs `agentation projects --json`
-  - runs `rg` to discover literal `projectId="..."` values in the repo
+  - runs `rg` to discover literal `projectId="..."` or `projectId='...'` values in the repo
   - intersects both lists
   - auto-starts if exactly one project matches, otherwise prompts you to choose in the TUI
 - The resolved project ID is stored in the current Pi session so reloads/resume do not re-prompt that same session
@@ -27,29 +27,35 @@ It starts automatically when the session starts, resolves the project ID for the
 - `/agentation-loop-start` — resume/start looping
 - `/agentation-loop-stop` — pause looping
 
-## Use it
+## Installation
 
-From this workspace package (after `pnpm install`) — recommended (includes embedded skill automatically):
-
-```bash
-pnpm --filter agentation-pi exec ./bin/agentation-pi
-```
-
-From this monorepo, directly via `pi` (must pass the bundled skill path):
+Install both project packages:
 
 ```bash
-pi \
-  -e ./packages/pi-agentation/agentation.ts \
-  --skill ./packages/pi-agentation/skills/agentation-fix-loop/SKILL.md
+npm install -D @alexgorbatchev/agentation @alexgorbatchev/pi-agentation
 ```
 
-Pass normal Pi flags/args through it:
+Required executables on `PATH`:
+
+- `pi`
+- `agentation`
+- `rg`
+
+The `agentation` CLI is distributed separately from these npm packages and must be downloaded and placed on your `PATH`.
+
+## Usage
+
+Run the launcher from your project:
 
 ```bash
-pnpm --filter agentation-pi exec ./bin/agentation-pi -- --list-models
+npx pi-agentation
 ```
 
-To auto-discover both the extension and embedded skill, install this package as a Pi package (so `pi.skills` and `pi.extensions` are both loaded), instead of copying only `agentation.ts` into an extensions folder.
+If your shell already exposes local package binaries on `PATH`, you can run:
+
+```bash
+pi-agentation
+```
 
 ## Notes
 
