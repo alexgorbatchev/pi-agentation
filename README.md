@@ -1,12 +1,18 @@
-# Agentation Pi Plugin
-
-`agentation.ts`
+# pi plugin for Agentation Fork
 
 A pi extension that continuously runs an Agentation fix loop by repeatedly sending:
 
 - `/skill:agentation-fix-loop <project-id>`
 
 It starts automatically when the session starts, resolves the project ID for the current repository (searching for `<Agentation projectId=... />`), and keeps re-queuing the same project-scoped prompt after each agent run until pi exits (or you stop it).
+
+See:
+
+- [Agentation Fork](https://github.com/alexgorbatchev/agentation)
+- [CLI](https://github.com/alexgorbatchev/agentation-cli)
+
+> [!IMPORTANT]
+> This loops AI until manually stopped and so it can consume tokens while idling. Don't forget to stop it when you no longer using it.
 
 ## Behavior
 
@@ -41,11 +47,11 @@ Required executables on `PATH`:
 - `agentation`
 - `rg`
 
-The `agentation` CLI is distributed separately from these npm packages and must be downloaded and placed on your `PATH`.
+The `agentation` [CLI](https://github.com/alexgorbatchev/agentation-cli) is distributed separately from these npm packages and must be downloaded and placed on your `PATH`.
 
 ## Usage
 
-Run the launcher from your project:
+Before running the pi, you need to start the [CLI](https://github.com/alexgorbatchev/agentation-cli) and connect from the front end which has `<Agentation projectId="..." />` at least once in the last 24h. Then run the launcher from your project:
 
 ```bash
 npx pi-agentation
