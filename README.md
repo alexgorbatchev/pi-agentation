@@ -10,13 +10,14 @@ See:
 
 - [Agentation Fork](https://github.com/alexgorbatchev/agentation)
 - [CLI](https://github.com/alexgorbatchev/agentation-cli)
+- [Agentation Skills](https://github.com/alexgorbatchev/agentation-skills)
 
 > [!IMPORTANT]
 > This loops AI until manually stopped and so it can consume tokens while idling. Don't forget to stop it when you no longer using it.
 
 ## Behavior
 
-- The launcher (`pi-agentation`) injects the vendored local skill via `--skill`
+- The launcher (`pi-agentation`) injects the local packaged fix-loop skill via `--skill`
 - Extension checks that `/skill:agentation-fix-loop` is available before running
 - On session start/switch/fork, the extension:
   - runs `agentation projects --json`
@@ -40,6 +41,8 @@ Install both project packages:
 ```bash
 npm install -D @alexgorbatchev/agentation @alexgorbatchev/pi-agentation
 ```
+
+`@alexgorbatchev/pi-agentation` ships its own packaged copy of the fix-loop skill. That file is synced from [`@alexgorbatchev/agentation-skills`](https://github.com/alexgorbatchev/agentation-skills) during packaging, so you do not need to install the skill package separately.
 
 Required executables on `PATH`:
 
