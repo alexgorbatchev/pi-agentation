@@ -43,6 +43,13 @@ interface IAgentationBatchResponse {
   timeout?: boolean;
 }
 
+interface IAgentationWatchTimeoutResponse {
+  message?: string;
+  timeout: true;
+}
+
+type AgentationPollResponse = IAgentationBatchResponse | IAgentationWatchTimeoutResponse;
+
 interface IAnnotationProgress {
   id: string;
   isHandled: boolean;
@@ -504,22 +511,34 @@ export default function agentation(pi: ExtensionAPI): void {
         continue;
       }
 
-      const batchResponse = parseAgentationBatchResponse(commandOutcome.stdout);
-      if (batchResponse === null) {
+      const pollResponse = parseAgentationPollResponse(commandOutcome.stdout);
+      if (pollResponse === null) {
         reportError(
           runtimeState.currentContext,
-          `Agentation ${nextBatchSource} returned invalid JSON for ${projectId}.`
+          `Agentation ${nextBatchSource} returned an unexpected JSON response for ${projectId}.`
         );
         await waitForDelay(WATCH_RETRY_DELAY_MS, signal);
         nextBatchSource = "pending";
         continue;
       }
 
-      if (batchResponse.annotations.length === 0) {
+      if (isAgentationWatchTimeoutResponse(pollResponse)) {
+        const detail = pollResponse.message ?? `No new annotations in the last ${WATCH_TIMEOUT_SECONDS}s. Restarting live watch.`;
+        setUiState(runtimeState.currentContext, {
+          detail,
+          phase: "watching",
+          projectId,
+          source: nextBatchSource,
+        });
+        nextBatchSource = "watch";
+        continue;
+      }
+
+      if (pollResponse.annotations.length === 0) {
         const detail =
           nextBatchSource === "pending"
             ? "No pending annotations. Live watch active."
-            : batchResponse.timeout === true
+            : pollResponse.timeout === true
               ? `No new annotations in the last ${WATCH_TIMEOUT_SECONDS}s. Restarting live watch.`
               : "Live watch active.";
         setUiState(runtimeState.currentContext, {
@@ -532,7 +551,7 @@ export default function agentation(pi: ExtensionAPI): void {
         continue;
       }
 
-      dispatchBatch(projectId, nextBatchSource, batchResponse);
+      dispatchBatch(projectId, nextBatchSource, pollResponse);
       nextBatchSource = "watch";
     }
   };
@@ -938,10 +957,10 @@ function waitForDelay(milliseconds: number, signal: AbortSignal): Promise<void> 
   });
 }
 
-function parseAgentationBatchResponse(jsonText: string): IAgentationBatchResponse | null {
+function parseAgentationPollResponse(jsonText: string): AgentationPollResponse | null {
   try {
     const parsed = JSON.parse(jsonText);
-    return isAgentationBatchResponse(parsed) ? parsed : null;
+    return isAgentationPollResponse(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -972,6 +991,10 @@ function isAgentationAnnotation(value: unknown): value is IAgentationAnnotation 
   return typeof value["id"] === "string" && value["id"].trim() !== "";
 }
 
+function isAgentationPollResponse(value: unknown): value is AgentationPollResponse {
+  return isAgentationBatchResponse(value) || isAgentationWatchTimeoutResponse(value);
+}
+
 function isAgentationBatchResponse(value: unknown): value is IAgentationBatchResponse {
   if (!isRecord(value)) {
     return false;
@@ -986,6 +1009,25 @@ function isAgentationBatchResponse(value: unknown): value is IAgentationBatchRes
   }
 
   if (timeout !== undefined && typeof timeout !== "boolean") {
+    return false;
+  }
+
+  return true;
+}
+
+function isAgentationWatchTimeoutResponse(value: unknown): value is IAgentationWatchTimeoutResponse {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const timeout = value["timeout"];
+  const message = value["message"];
+
+  if (timeout !== true) {
+    return false;
+  }
+
+  if (message !== undefined && typeof message !== "string") {
     return false;
   }
 
