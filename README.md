@@ -14,9 +14,9 @@ See:
 - [Agentation Skills](https://github.com/alexgorbatchev/agentation-skills)
 
 > [!IMPORTANT]
-> This can continuously poll Agentation Fork and dispatch autonomous code-fix
-> turns. It can consume tokens quickly when annotations are active. Pause it
-> when you are done.
+> When idle, this keeps an Agentation Fork watch loop running but does not
+> spend model tokens. Tokens are only used when a real annotation batch is
+> dispatched for autonomous code-fix work.
 
 ## Architecture
 
