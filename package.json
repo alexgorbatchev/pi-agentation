@@ -2,6 +2,10 @@
   "name": "@alexgorbatchev/pi-agentation",
   "version": "3.1.0",
   "description": "pi extension launcher for Agentation Fork",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexgorbatchev/pi-agentation"
+  },
   "license": "MIT",
   "keywords": [
     "pi-package",
