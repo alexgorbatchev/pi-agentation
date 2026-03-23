@@ -1,12 +1,25 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Container, Text } from "@mariozechner/pi-tui";
+import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
 
-const LOOP_SKILL_NAME = "agentation-fix-loop";
-const LOOP_PROMPT = `/skill:${LOOP_SKILL_NAME}`;
+const AGENTATION_SKILL_NAME = "agentation";
+const AGENTATION_SKILL_PROMPT = `/skill:${AGENTATION_SKILL_NAME}`;
+const AGENTATION_EXECUTABLE_ENV_NAME = "PI_AGENTATION_AGENTATION_BIN";
 const PROJECT_SELECTION_ENTRY_TYPE = "agentation-project-selection";
+const BATCH_CONTEXT_MESSAGE_TYPE = "agentation-batch-context";
 const PROJECT_ID_PATTERN = /^projectId=(?:"([^"\r\n]+)"|'([^'\r\n]+)')$/;
+const AGENTATION_SKILL_INVOCATION_PATTERN = new RegExp(`^${AGENTATION_SKILL_PROMPT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s+(.+))?$`);
+const AGENTATION_ACTION_PATTERN = /\bagentation\s+(ack|resolve|reply|dismiss)\s+([^\s]+)/g;
+const WATCH_TIMEOUT_SECONDS = "300";
+const WATCH_BATCH_WINDOW = "10";
+const LOOP_IDLE_WAIT_MS = 500;
+const WATCH_RETRY_DELAY_MS = 5_000;
 
 type ExecResult = Awaited<ReturnType<ExtensionAPI["exec"]>>;
+type AgentationAction = "ack" | "resolve" | "reply" | "dismiss";
+type BatchSource = "pending" | "watch";
 
 type CommandOutcome = {
   code: number | undefined;
@@ -20,9 +33,69 @@ interface IProjectSelectionData {
   projectId: string;
 }
 
+interface IAgentationAnnotation extends Record<string, unknown> {
+  id: string;
+}
+
+interface IAgentationBatchResponse {
+  annotations: IAgentationAnnotation[];
+  count: number;
+  timeout?: boolean;
+}
+
+interface IAnnotationProgress {
+  id: string;
+  isHandled: boolean;
+  lastAction?: AgentationAction;
+  wasAcknowledged: boolean;
+}
+
+interface IActiveBatch {
+  annotations: IAgentationAnnotation[];
+  progressById: Map<string, IAnnotationProgress>;
+  projectId: string;
+  rawJson: string;
+  source: BatchSource;
+}
+
+type AgentationUiPhase = "error" | "initializing" | "processing" | "watching";
+
+interface IAgentationUiState {
+  annotationCount?: number;
+  detail: string;
+  phase: AgentationUiPhase;
+  projectId: string | null;
+  source?: BatchSource;
+}
+
+interface ILoopRuntimeState {
+  activeBatch: IActiveBatch | null;
+  agentationExecutablePath: string | null;
+  currentContext: ExtensionContext | null;
+  currentProjectId: string | null;
+  hasNotifiedIncompleteBatch: boolean;
+  isLoopEnabled: boolean;
+  pendingLoopInvocationProjectId: string | null;
+  uiState: IAgentationUiState | null;
+  watchAbortController: AbortController | null;
+  watchGeneration: number;
+  watchTask: Promise<void> | null;
+}
+
 export default function agentation(pi: ExtensionAPI): void {
-  let currentProjectId: string | null = null;
-  let isLoopEnabled = true;
+  const runtimeState: ILoopRuntimeState = {
+    activeBatch: null,
+    agentationExecutablePath: null,
+    currentContext: null,
+    currentProjectId: null,
+    hasNotifiedIncompleteBatch: false,
+    isLoopEnabled: true,
+    pendingLoopInvocationProjectId: null,
+    uiState: null,
+    watchAbortController: null,
+    watchGeneration: 0,
+    watchTask: null,
+  };
 
   const isLoopSkillAvailable = (): boolean => {
     return pi.getCommands().some((command) => {
@@ -30,18 +103,81 @@ export default function agentation(pi: ExtensionAPI): void {
         return false;
       }
 
-      return command.name === LOOP_SKILL_NAME || command.name === `skill:${LOOP_SKILL_NAME}`;
+      return command.name === AGENTATION_SKILL_NAME || command.name === `skill:${AGENTATION_SKILL_NAME}`;
     });
   };
 
-  const reportError = (ctx: ExtensionContext, message: string): void => {
+  const setCurrentContext = (ctx: ExtensionContext): void => {
+    runtimeState.currentContext = ctx;
+  };
+
+  const clearUiState = (ctx: ExtensionContext | null): void => {
+    runtimeState.uiState = null;
+    if (ctx === null || !ctx.hasUI) {
+      return;
+    }
+
+    ctx.ui.setStatus("agentation", undefined);
+    ctx.ui.setWidget("agentation", undefined);
+  };
+
+  const setUiState = (ctx: ExtensionContext | null, uiState: IAgentationUiState): void => {
+    runtimeState.uiState = uiState;
+    if (ctx === null || !ctx.hasUI) {
+      return;
+    }
+
+    const statusText = formatWidgetTitle(uiState);
+
+    ctx.ui.setWidget("agentation", (_tui, theme) => {
+      const borderColorName = getUiPhaseColorName(uiState.phase);
+      const borderColor = (text: string): string => theme.fg(borderColorName, text);
+      const container = new Container();
+      const titleText = borderColor(theme.bold(statusText));
+
+      container.addChild(new DynamicBorder(borderColor));
+      container.addChild(new Text(titleText, 1, 0));
+      container.addChild(new DynamicBorder(borderColor));
+      return container;
+    });
+  };
+
+  const reportError = (ctx: ExtensionContext | null, message: string): void => {
     console.error(message);
-    ctx.ui.notify(message, "error");
+    setUiState(ctx, {
+      detail: message,
+      phase: "error",
+      projectId: runtimeState.currentProjectId,
+      source: runtimeState.activeBatch?.source,
+    });
+    ctx?.ui.notify(message, "error");
+  };
+
+  const stopWatchLoop = (): void => {
+    runtimeState.watchGeneration += 1;
+    runtimeState.watchAbortController?.abort();
+    runtimeState.watchAbortController = null;
+    runtimeState.watchTask = null;
+  };
+
+  const resetRuntimeStateForSession = (ctx: ExtensionContext): void => {
+    clearUiState(runtimeState.currentContext);
+    stopWatchLoop();
+    setCurrentContext(ctx);
+    runtimeState.activeBatch = null;
+    runtimeState.agentationExecutablePath = resolveAgentationExecutablePath(ctx.cwd);
+    runtimeState.currentProjectId = restoreProjectSelection(ctx);
+    runtimeState.hasNotifiedIncompleteBatch = false;
+    runtimeState.isLoopEnabled = true;
+    runtimeState.pendingLoopInvocationProjectId = null;
   };
 
   const shutdownForFatalError = (ctx: ExtensionContext, message: string): void => {
-    currentProjectId = null;
-    isLoopEnabled = false;
+    stopWatchLoop();
+    runtimeState.activeBatch = null;
+    runtimeState.currentProjectId = null;
+    runtimeState.isLoopEnabled = false;
+    runtimeState.pendingLoopInvocationProjectId = null;
     process.exitCode = 1;
     reportError(ctx, message);
     ctx.shutdown();
@@ -52,30 +188,16 @@ export default function agentation(pi: ExtensionAPI): void {
       return true;
     }
 
-    shutdownForFatalError(ctx, `Missing required skill ${LOOP_PROMPT}. Exiting.`);
+    shutdownForFatalError(ctx, `Missing required skill ${AGENTATION_SKILL_PROMPT}. Exiting.`);
     return false;
   };
 
-  const queueLoopPrompt = (projectId: string, deliverAsFollowUp: boolean): void => {
-    if (!isLoopEnabled) {
-      return;
-    }
-
-    const loopPrompt = `${LOOP_PROMPT} ${projectId}`;
-    if (deliverAsFollowUp) {
-      pi.sendUserMessage(loopPrompt, { deliverAs: "followUp" });
-      return;
-    }
-
-    pi.sendUserMessage(loopPrompt);
-  };
-
   const persistProjectSelection = (projectId: string): void => {
-    if (currentProjectId === projectId) {
+    if (runtimeState.currentProjectId === projectId) {
       return;
     }
 
-    currentProjectId = projectId;
+    runtimeState.currentProjectId = projectId;
     pi.appendEntry(PROJECT_SELECTION_ENTRY_TYPE, { projectId });
   };
 
@@ -103,13 +225,12 @@ export default function agentation(pi: ExtensionAPI): void {
       }
     }
 
-    currentProjectId = latestProjectId;
     return latestProjectId;
   };
 
-  const execCommand = async (command: string, args: string[]): Promise<CommandOutcome> => {
+  const execCommand = async (command: string, args: string[], signal?: AbortSignal): Promise<CommandOutcome> => {
     try {
-      const result: ExecResult = await pi.exec(command, args);
+      const result: ExecResult = await pi.exec(command, args, { signal });
       return {
         code: result.code,
         killed: result.killed,
@@ -127,11 +248,16 @@ export default function agentation(pi: ExtensionAPI): void {
     }
   };
 
+  const execAgentationCommand = async (args: string[], signal?: AbortSignal): Promise<CommandOutcome> => {
+    const agentationExecutablePath = runtimeState.agentationExecutablePath ?? "agentation";
+    return execCommand(agentationExecutablePath, args, signal);
+  };
+
   const listKnownProjectIds = async (): Promise<{ errorMessage?: string; projectIds: string[] }> => {
-    let projectsResult = await execCommand("agentation", ["projects", "--json"]);
+    let projectsResult = await execAgentationCommand(["projects", "--json"]);
     if (!didCommandSucceed(projectsResult)) {
-      await execCommand("agentation", ["start", "--background"]);
-      projectsResult = await execCommand("agentation", ["projects", "--json"]);
+      await execAgentationCommand(["start", "--background"]);
+      projectsResult = await execAgentationCommand(["projects", "--json"]);
     }
 
     if (!didCommandSucceed(projectsResult)) {
@@ -233,10 +359,188 @@ export default function agentation(pi: ExtensionAPI): void {
     return selectedProjectId;
   };
 
-  const initializeLoopForSession = async (ctx: ExtensionContext): Promise<void> => {
-    restoreProjectSelection(ctx);
+  const clearActiveBatch = (): void => {
+    runtimeState.activeBatch = null;
+    runtimeState.hasNotifiedIncompleteBatch = false;
+  };
 
-    if (!isLoopEnabled) {
+  const createActiveBatch = (
+    projectId: string,
+    source: BatchSource,
+    batchResponse: IAgentationBatchResponse
+  ): IActiveBatch => {
+    const progressById = new Map<string, IAnnotationProgress>();
+    for (const annotation of batchResponse.annotations) {
+      progressById.set(annotation.id, {
+        id: annotation.id,
+        isHandled: false,
+        wasAcknowledged: false,
+      });
+    }
+
+    return {
+      annotations: batchResponse.annotations,
+      progressById,
+      projectId,
+      rawJson: JSON.stringify(batchResponse, null, 2),
+      source,
+    };
+  };
+
+  const createBatchContextMessage = (activeBatch: IActiveBatch): string => {
+    return [
+      "Agentation extension batch context:",
+      `- projectId: ${activeBatch.projectId}`,
+      `- source: ${activeBatch.source}`,
+      `- annotationCount: ${activeBatch.annotations.length}`,
+      "- The extension already fetched this batch.",
+      "- Do NOT call `agentation pending`, `agentation watch`, `agentation start`, `agentation status`, or `agentation projects`.",
+      "- Use `agentation ack`, `agentation resolve`, `agentation reply`, and `agentation dismiss` only for annotation IDs from this batch.",
+      "- Run those Agentation action commands as separate bash commands so the extension can track batch completion correctly.",
+      "",
+      "Current batch JSON:",
+      "```json",
+      activeBatch.rawJson,
+      "```",
+    ].join("\n");
+  };
+
+  const createNoBatchContextMessage = (projectId: string): string => {
+    return [
+      "Agentation extension batch context:",
+      `- projectId: ${projectId}`,
+      "- There is no active batch available right now.",
+      "- Do NOT call `agentation pending` or `agentation watch` yourself; the extension owns polling.",
+      "- If you need to recover from an interrupted batch, restart pi-agentation.",
+    ].join("\n");
+  };
+
+  const dispatchActiveBatch = (projectId: string): void => {
+    const loopPrompt = `${AGENTATION_SKILL_PROMPT} ${projectId}`;
+    const currentContext = runtimeState.currentContext;
+    const activeBatch = runtimeState.activeBatch;
+    const source = activeBatch?.source;
+
+    runtimeState.pendingLoopInvocationProjectId = projectId;
+    runtimeState.hasNotifiedIncompleteBatch = false;
+    setUiState(currentContext, {
+      annotationCount: activeBatch?.annotations.length,
+      detail:
+        currentContext !== null && !currentContext.isIdle()
+          ? `Triggered ${AGENTATION_SKILL_PROMPT}. Batch queued; pi is busy.`
+          : `Triggered ${AGENTATION_SKILL_PROMPT}. Pi is processing the batch.`,
+      phase: "processing",
+      projectId,
+      source,
+    });
+
+    if (currentContext !== null && !currentContext.isIdle()) {
+      pi.sendUserMessage(loopPrompt, { deliverAs: "followUp" });
+      return;
+    }
+
+    pi.sendUserMessage(loopPrompt);
+  };
+
+  const dispatchBatch = (projectId: string, source: BatchSource, batchResponse: IAgentationBatchResponse): void => {
+    runtimeState.activeBatch = createActiveBatch(projectId, source, batchResponse);
+    setUiState(runtimeState.currentContext, {
+      annotationCount: batchResponse.annotations.length,
+      detail: `${batchResponse.annotations.length} annotation${batchResponse.annotations.length === 1 ? "" : "s"} received. Triggering ${AGENTATION_SKILL_PROMPT}.`,
+      phase: "processing",
+      projectId,
+      source,
+    });
+    runtimeState.currentContext?.ui.notify(
+      `Agentation batch ready for ${projectId} (${batchResponse.annotations.length} annotation${batchResponse.annotations.length === 1 ? "" : "s"
+      })`,
+      "info"
+    );
+    dispatchActiveBatch(projectId);
+  };
+
+  const shouldContinueWatchLoop = (generation: number, projectId: string): boolean => {
+    return (
+      runtimeState.isLoopEnabled &&
+      runtimeState.currentProjectId === projectId &&
+      runtimeState.watchGeneration === generation
+    );
+  };
+
+  const runWatchLoop = async (generation: number, projectId: string, signal: AbortSignal): Promise<void> => {
+    let nextBatchSource: BatchSource = "pending";
+
+    while (shouldContinueWatchLoop(generation, projectId)) {
+      if (signal.aborted) {
+        return;
+      }
+
+      const currentContext = runtimeState.currentContext;
+      if (runtimeState.activeBatch !== null || (currentContext !== null && !currentContext.isIdle())) {
+        await waitForDelay(LOOP_IDLE_WAIT_MS, signal);
+        continue;
+      }
+
+      const commandArgs =
+        nextBatchSource === "pending"
+          ? ["pending", projectId, "--json"]
+          : ["watch", projectId, "--timeout", WATCH_TIMEOUT_SECONDS, "--batch-window", WATCH_BATCH_WINDOW, "--json"];
+      const commandOutcome = await execAgentationCommand(commandArgs, signal);
+      if (!shouldContinueWatchLoop(generation, projectId) || signal.aborted) {
+        return;
+      }
+
+      if (!didCommandSucceed(commandOutcome)) {
+        if (commandOutcome.killed && signal.aborted) {
+          return;
+        }
+
+        reportError(
+          runtimeState.currentContext,
+          `Agentation ${nextBatchSource} failed for ${projectId}: ${formatCommandOutcome(commandOutcome)}`
+        );
+        await waitForDelay(WATCH_RETRY_DELAY_MS, signal);
+        nextBatchSource = "pending";
+        continue;
+      }
+
+      const batchResponse = parseAgentationBatchResponse(commandOutcome.stdout);
+      if (batchResponse === null) {
+        reportError(
+          runtimeState.currentContext,
+          `Agentation ${nextBatchSource} returned invalid JSON for ${projectId}.`
+        );
+        await waitForDelay(WATCH_RETRY_DELAY_MS, signal);
+        nextBatchSource = "pending";
+        continue;
+      }
+
+      if (batchResponse.annotations.length === 0) {
+        const detail =
+          nextBatchSource === "pending"
+            ? "No pending annotations. Live watch active."
+            : batchResponse.timeout === true
+              ? `No new annotations in the last ${WATCH_TIMEOUT_SECONDS}s. Restarting live watch.`
+              : "Live watch active.";
+        setUiState(runtimeState.currentContext, {
+          detail,
+          phase: "watching",
+          projectId,
+          source: nextBatchSource,
+        });
+        nextBatchSource = "watch";
+        continue;
+      }
+
+      dispatchBatch(projectId, nextBatchSource, batchResponse);
+      nextBatchSource = "watch";
+    }
+  };
+
+  const startWatchLoop = (ctx: ExtensionContext, projectId: string): void => {
+    setCurrentContext(ctx);
+
+    if (!runtimeState.isLoopEnabled) {
       return;
     }
 
@@ -244,7 +548,52 @@ export default function agentation(pi: ExtensionAPI): void {
       return;
     }
 
-    let projectId = currentProjectId;
+    if (runtimeState.watchTask !== null && runtimeState.currentProjectId === projectId) {
+      setUiState(ctx, {
+        detail: "Live watch active.",
+        phase: "watching",
+        projectId,
+        source: "watch",
+      });
+      return;
+    }
+
+    stopWatchLoop();
+    runtimeState.currentProjectId = projectId;
+    setUiState(ctx, {
+      detail: "Checking queue…",
+      phase: "initializing",
+      projectId,
+      source: "pending",
+    });
+
+    const watchAbortController = new AbortController();
+    const generation = runtimeState.watchGeneration;
+    runtimeState.watchAbortController = watchAbortController;
+    runtimeState.watchTask = runWatchLoop(generation, projectId, watchAbortController.signal).finally(() => {
+      if (runtimeState.watchGeneration !== generation) {
+        return;
+      }
+
+      runtimeState.watchAbortController = null;
+      runtimeState.watchTask = null;
+    });
+  };
+
+  const initializeLoopForSession = async (ctx: ExtensionContext): Promise<void> => {
+    resetRuntimeStateForSession(ctx);
+    setUiState(ctx, {
+      detail: "Resolving project…",
+      phase: "initializing",
+      projectId: runtimeState.currentProjectId,
+      source: "pending",
+    });
+
+    if (!ensureLoopSkillAvailable(ctx)) {
+      return;
+    }
+
+    let projectId = runtimeState.currentProjectId;
     if (projectId === null) {
       projectId = await resolveProjectId(ctx);
       if (projectId === null) {
@@ -253,8 +602,51 @@ export default function agentation(pi: ExtensionAPI): void {
       persistProjectSelection(projectId);
     }
 
-    ctx.ui.notify(`Agentation loop started for ${projectId}`, "info");
-    queueLoopPrompt(projectId, !ctx.isIdle());
+    startWatchLoop(ctx, projectId);
+    ctx.ui.notify(`Agentation extension watch started for ${projectId}`, "info");
+  };
+
+  const updateBatchProgressFromCommand = (command: string): void => {
+    const activeBatch = runtimeState.activeBatch;
+    if (activeBatch === null) {
+      return;
+    }
+
+    const actions = extractAgentationActionsFromCommand(command);
+    if (actions.length === 0) {
+      return;
+    }
+
+    for (const action of actions) {
+      const annotationProgress = activeBatch.progressById.get(action.annotationId);
+      if (annotationProgress === undefined) {
+        continue;
+      }
+
+      if (action.action === "ack") {
+        annotationProgress.wasAcknowledged = true;
+        continue;
+      }
+
+      annotationProgress.isHandled = true;
+      annotationProgress.lastAction = action.action;
+    }
+
+    const isBatchHandled = Array.from(activeBatch.progressById.values()).every((annotationProgress) => {
+      return annotationProgress.isHandled;
+    });
+    if (!isBatchHandled) {
+      return;
+    }
+
+    clearActiveBatch();
+    setUiState(runtimeState.currentContext, {
+      detail: "Batch completed. Live watch active.",
+      phase: "watching",
+      projectId: activeBatch.projectId,
+      source: "watch",
+    });
+    runtimeState.currentContext?.ui.notify(`Agentation batch completed for ${activeBatch.projectId}`, "success");
   };
 
   pi.on("session_start", async (_event, ctx) => {
@@ -269,62 +661,108 @@ export default function agentation(pi: ExtensionAPI): void {
     await initializeLoopForSession(ctx);
   });
 
+  pi.on("input", async (event, ctx) => {
+    setCurrentContext(ctx);
+    runtimeState.pendingLoopInvocationProjectId = parseLoopInvocationProjectId(event.text);
+    return { action: "continue" };
+  });
+
+  pi.on("before_agent_start", async (_event, ctx) => {
+    setCurrentContext(ctx);
+
+    const pendingProjectId = runtimeState.pendingLoopInvocationProjectId;
+    if (pendingProjectId === null) {
+      return undefined;
+    }
+
+    runtimeState.pendingLoopInvocationProjectId = null;
+
+    const activeBatch = runtimeState.activeBatch;
+    const content =
+      activeBatch !== null && activeBatch.projectId === pendingProjectId
+        ? createBatchContextMessage(activeBatch)
+        : createNoBatchContextMessage(pendingProjectId);
+
+    return {
+      message: {
+        content,
+        customType: BATCH_CONTEXT_MESSAGE_TYPE,
+        display: false,
+      },
+    };
+  });
+
+  pi.on("tool_result", async (event, ctx) => {
+    setCurrentContext(ctx);
+
+    if (event.toolName !== "bash" || event.isError || !isBashToolInput(event.input)) {
+      return undefined;
+    }
+
+    updateBatchProgressFromCommand(event.input.command);
+    return undefined;
+  });
+
   pi.on("agent_end", async (_event, ctx) => {
-    if (!isLoopEnabled) {
+    setCurrentContext(ctx);
+
+    if (runtimeState.activeBatch === null || runtimeState.hasNotifiedIncompleteBatch) {
       return;
     }
 
-    if (!ensureLoopSkillAvailable(ctx)) {
-      return;
-    }
-
-    if (currentProjectId === null) {
-      reportError(ctx, "Agentation loop is enabled, but no project ID is selected for this session.");
-      return;
-    }
-
-    queueLoopPrompt(currentProjectId, !ctx.isIdle());
+    runtimeState.hasNotifiedIncompleteBatch = true;
+    setUiState(ctx, {
+      annotationCount: runtimeState.activeBatch.annotations.length,
+      detail: "Batch still incomplete. Restart pi-agentation to retry.",
+      phase: "processing",
+      projectId: runtimeState.activeBatch.projectId,
+      source: runtimeState.activeBatch.source,
+    });
+    ctx.ui.notify("Current Agentation batch is still incomplete. Restart pi-agentation to retry.", "warning");
   });
 
   pi.on("session_shutdown", async () => {
-    currentProjectId = null;
-    isLoopEnabled = false;
+    clearUiState(runtimeState.currentContext);
+    stopWatchLoop();
+    runtimeState.activeBatch = null;
+    runtimeState.agentationExecutablePath = null;
+    runtimeState.currentContext = null;
+    runtimeState.currentProjectId = null;
+    runtimeState.pendingLoopInvocationProjectId = null;
   });
 
-  pi.registerCommand("agentation-loop-start", {
-    description: "Start the automatic Agentation fix loop",
-    handler: async (_args, ctx) => {
-      if (isLoopEnabled) {
-        ctx.ui.notify("Agentation loop is already running", "info");
-        return;
-      }
+}
 
-      if (!ensureLoopSkillAvailable(ctx)) {
-        return;
-      }
+function formatWidgetTitle(uiState: IAgentationUiState): string {
+  const projectLabel = uiState.projectId ?? "resolving";
+  const phaseLabel = formatUiPhase(uiState.phase);
+  return `Agentation Fork / ${projectLabel} / ${phaseLabel}`;
+}
 
-      let projectId = currentProjectId ?? restoreProjectSelection(ctx);
-      if (projectId === null) {
-        projectId = await resolveProjectId(ctx);
-        if (projectId === null) {
-          return;
-        }
-        persistProjectSelection(projectId);
-      }
+function getUiPhaseColorName(phase: AgentationUiPhase): "accent" | "error" | "success" | "warning" {
+  switch (phase) {
+    case "error":
+      return "error";
+    case "initializing":
+      return "warning";
+    case "processing":
+      return "accent";
+    case "watching":
+      return "success";
+  }
+}
 
-      isLoopEnabled = true;
-      ctx.ui.notify(`Agentation loop resumed for ${projectId}`, "info");
-      queueLoopPrompt(projectId, !ctx.isIdle());
-    },
-  });
-
-  pi.registerCommand("agentation-loop-stop", {
-    description: "Stop the automatic Agentation fix loop",
-    handler: async (_args, ctx) => {
-      isLoopEnabled = false;
-      ctx.ui.notify("Agentation loop paused", "warning");
-    },
-  });
+function formatUiPhase(phase: AgentationUiPhase): string {
+  switch (phase) {
+    case "error":
+      return "Error";
+    case "initializing":
+      return "Initializing";
+    case "processing":
+      return "Running";
+    case "watching":
+      return "Watching";
+  }
 }
 
 function didCommandSucceed(commandOutcome: CommandOutcome): boolean {
@@ -405,6 +843,110 @@ function extractProjectIdsFromRgOutput(output: string): string[] {
   return normalizeProjectIds(projectIds);
 }
 
+function resolveAgentationExecutablePath(cwd: string): string {
+  const explicitExecutablePath = process.env[AGENTATION_EXECUTABLE_ENV_NAME];
+  if (isExecutablePath(explicitExecutablePath)) {
+    return explicitExecutablePath;
+  }
+
+  const localExecutablePath = findNearestNodeModulesExecutable("agentation", cwd);
+  if (localExecutablePath !== null) {
+    return localExecutablePath;
+  }
+
+  return "agentation";
+}
+
+function findNearestNodeModulesExecutable(executableName: string, startDirectory: string): string | null {
+  let currentDirectory = path.resolve(startDirectory);
+
+  while (true) {
+    const candidateExecutablePath = path.join(currentDirectory, "node_modules", ".bin", executableName);
+    if (isExecutablePath(candidateExecutablePath)) {
+      return candidateExecutablePath;
+    }
+
+    const parentDirectory = path.dirname(currentDirectory);
+    if (parentDirectory === currentDirectory) {
+      return null;
+    }
+
+    currentDirectory = parentDirectory;
+  }
+}
+
+function isExecutablePath(filePath: string | undefined): filePath is string {
+  if (typeof filePath !== "string" || filePath.trim() === "") {
+    return false;
+  }
+
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseLoopInvocationProjectId(text: string): string | null {
+  const firstLine = text.split(/\r?\n/, 1)[0]?.trim() ?? "";
+  const match = AGENTATION_SKILL_INVOCATION_PATTERN.exec(firstLine);
+  const projectId = match?.[1];
+  if (projectId === undefined) {
+    return null;
+  }
+
+  return normalizeProjectId(projectId);
+}
+
+function extractAgentationActionsFromCommand(
+  command: string
+): Array<{ action: AgentationAction; annotationId: string }> {
+  const actions: Array<{ action: AgentationAction; annotationId: string }> = [];
+
+  for (const match of command.matchAll(AGENTATION_ACTION_PATTERN)) {
+    const action = match[1];
+    const annotationId = match[2];
+    if (action === undefined || annotationId === undefined || !isAgentationAction(action)) {
+      continue;
+    }
+
+    actions.push({ action, annotationId });
+  }
+
+  return actions;
+}
+
+function waitForDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const timeoutHandle = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+
+    const onAbort = (): void => {
+      clearTimeout(timeoutHandle);
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function parseAgentationBatchResponse(jsonText: string): IAgentationBatchResponse | null {
+  try {
+    const parsed = JSON.parse(jsonText);
+    return isAgentationBatchResponse(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -420,6 +962,46 @@ function isProjectSelectionData(value: unknown): value is IProjectSelectionData 
 
   const projectId = value["projectId"];
   return typeof projectId === "string" && projectId.trim() !== "";
+}
+
+function isAgentationAnnotation(value: unknown): value is IAgentationAnnotation {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return typeof value["id"] === "string" && value["id"].trim() !== "";
+}
+
+function isAgentationBatchResponse(value: unknown): value is IAgentationBatchResponse {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const count = value["count"];
+  const annotations = value["annotations"];
+  const timeout = value["timeout"];
+
+  if (typeof count !== "number" || !Array.isArray(annotations) || !annotations.every(isAgentationAnnotation)) {
+    return false;
+  }
+
+  if (timeout !== undefined && typeof timeout !== "boolean") {
+    return false;
+  }
+
+  return true;
+}
+
+function isBashToolInput(value: unknown): value is { command: string } {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return typeof value["command"] === "string";
+}
+
+function isAgentationAction(value: string): value is AgentationAction {
+  return value === "ack" || value === "resolve" || value === "reply" || value === "dismiss";
 }
 
 function parseJsonStringArray(jsonText: string): string[] | null {

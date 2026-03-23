@@ -1,38 +1,60 @@
-# pi plugin for Agentation Fork
+# pi-agentation
 
-A pi extension that continuously runs an Agentation fix loop by repeatedly sending:
+A pi extension launcher for Agentation Fork.
 
-- `/skill:agentation-fix-loop <project-id>`
-
-It starts automatically when the session starts, resolves the project ID for the current repository (searching for `<Agentation projectId=... />`), and keeps re-queuing the same project-scoped prompt after each agent run until pi exits (or you stop it).
+It resolves the repository's Agentation Fork `projectId`, starts an
+extension-managed watch loop, and dispatches a **one-shot** Agentation Fork
+batch-processing skill when real annotations arrive.
 
 See:
 
+- [agentation-fork.vercel.app](https://agentation-fork.vercel.app)
 - [Agentation Fork](https://github.com/alexgorbatchev/agentation)
-- [CLI](https://github.com/alexgorbatchev/agentation-cli)
+- [Agentation Fork CLI](https://github.com/alexgorbatchev/agentation-cli)
 - [Agentation Skills](https://github.com/alexgorbatchev/agentation-skills)
 
 > [!IMPORTANT]
-> This loops AI until manually stopped and so it can consume tokens while idling. Don't forget to stop it when you no longer using it.
+> This can continuously poll Agentation Fork and dispatch autonomous code-fix
+> turns. It can consume tokens quickly when annotations are active. Pause it
+> when you are done.
+
+## Architecture
+
+`pi-agentation` now splits responsibilities cleanly:
+
+- **Extension**
+  - resolves the project for the current repo
+  - runs `agentation pending` once on startup
+  - then keeps a live `agentation watch <project-id> --timeout 300 --batch-window 10 --json` loop running
+  - dispatches exactly one skill run per fetched batch
+  - pauses queue polling while the current batch is still in progress
+
+- **Skill**
+  - processes exactly one already-fetched batch
+  - acknowledges each annotation
+  - edits code
+  - resolves, replies, or dismisses annotations
+  - exits when that batch is done
+
+This avoids the old brittle design where the extension kept re-queuing the same
+skill prompt after every agent turn.
 
 ## Behavior
 
-- The launcher (`pi-agentation`) injects the local packaged fix-loop skill via `--skill`
-- Extension checks that `/skill:agentation-fix-loop` is available before running
+- The launcher (`pi-agentation`) injects the bundled `agentation` skill via `--skill`
+- The extension checks that `/skill:agentation` is available before starting
 - On session start/switch/fork, the extension:
   - runs `agentation projects --json`
   - runs `rg` to discover literal `projectId="..."` or `projectId='...'` values in the repo
   - intersects both lists
   - auto-starts if exactly one project matches, otherwise prompts you to choose in the TUI
 - The resolved project ID is stored in the current Pi session so reloads/resume do not re-prompt that same session
-- On `agent_end`: sends the next project-scoped loop prompt
-- On `session_shutdown`: stops loop automatically
-- If the skill is missing, no repo project IDs are found, or no discovered repo IDs are known to Agentation yet: plugin requests shutdown and exits with code `1`
-
-## Commands
-
-- `/agentation-loop-start` — resume/start looping
-- `/agentation-loop-stop` — pause looping
+- The extension manages the polling loop itself; it does one startup `agentation pending` check and then relies on a live `agentation watch` loop as the primary mechanism
+- When a batch arrives, the extension injects batch context and dispatches `/skill:agentation <project-id>`
+- The UI widget is intentionally conservative: after startup it reports live-watch status, not an authoritative queue-empty claim
+- If a batch is left incomplete, restart `pi-agentation` to retry from a clean watch loop
+- On `session_shutdown`, the extension stops its internal watch loop automatically
+- If the skill is missing, no repo project IDs are found, or no discovered repo IDs are known to Agentation Fork yet: the plugin requests shutdown and exits with code `1`
 
 ## Installation
 
@@ -42,19 +64,19 @@ Install both project packages:
 npm install -D @alexgorbatchev/agentation @alexgorbatchev/pi-agentation
 ```
 
-`@alexgorbatchev/pi-agentation` ships its own packaged copy of the fix-loop skill. That file is synced from [`@alexgorbatchev/agentation-skills`](https://github.com/alexgorbatchev/agentation-skills) during packaging, so you do not need to install the skill package separately.
+`@alexgorbatchev/pi-agentation` ships a bundled `agentation` skill, so you do not need to install a separate skill package for local use.
 
-Required executables on `PATH`:
+Executable resolution order:
 
-- `pi`
-- `agentation`
-- `rg`
+- `pi-agentation` resolves `pi` from the nearest `node_modules/.bin/pi` first, then falls back to `PATH`
+- the extension resolves `agentation` from the nearest `node_modules/.bin/agentation` first, then falls back to `PATH`
+- `rg` is still expected on `PATH`
 
-The `agentation` [CLI](https://github.com/alexgorbatchev/agentation-cli) is distributed separately from these npm packages and must be downloaded and placed on your `PATH`.
+This makes the package work cleanly when `pi-agentation`, `pi`, and the Agentation Fork CLI are installed into the same Node project, while still supporting global installations.
 
 ## Usage
 
-Before running the pi, you need to start the [CLI](https://github.com/alexgorbatchev/agentation-cli) and connect from the front end which has `<Agentation projectId="..." />` at least once in the last 24h. Then run the launcher from your project:
+Before running pi, start the [Agentation Fork CLI](https://github.com/alexgorbatchev/agentation-cli) and connect from the front end which uses `<Agentation projectId="..." />` at least once in the last 24h. Then run the launcher from your project:
 
 ```bash
 npx pi-agentation
@@ -68,5 +90,5 @@ pi-agentation
 
 ## Notes
 
-- This loop is intentionally persistent and can consume tokens quickly.
-- Use `/agentation-loop-stop` if you want to pause it without exiting Pi.
+- The extension now owns polling; the skill is intentionally one-shot.
+- If you leave a batch partially handled, restart `pi-agentation` to retry from a clean watch loop.

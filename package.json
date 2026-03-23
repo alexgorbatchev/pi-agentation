@@ -1,7 +1,7 @@
 {
   "name": "@alexgorbatchev/pi-agentation",
   "version": "3.0.0",
-  "description": "pi extension launcher for the Agentation fix loop",
+  "description": "pi extension launcher for Agentation Fork",
   "license": "MIT",
   "keywords": [
     "pi-package",
@@ -23,19 +23,16 @@
     "agentation.ts",
     "README.md",
     "bin/pi-agentation",
-    "skills/agentation-fix-loop/SKILL.md"
+    "skills/agentation/SKILL.md"
   ],
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@alexgorbatchev/agentation-skills": "^1.0.0",
     "@mariozechner/pi-coding-agent": "^0.61.0"
   },
   "scripts": {
-    "check": "npm run sync-skill && npm run verify:package && npm run verify:launcher",
-    "prepack": "npm run sync-skill",
-    "sync-skill": "node ./scripts/syncBundledSkill.js",
+    "check": "npm run verify:package && npm run verify:launcher",
     "verify:package": "npm pack --dry-run > /dev/null",
     "verify:launcher": "PI_OFFLINE=1 ./bin/pi-agentation --list-models > /dev/null"
   },

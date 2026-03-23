@@ -14,7 +14,50 @@ done
 SCRIPT_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
 PACKAGE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-exec pi \
+find_local_bin() {
+  local start_dir="$1"
+  local executable_name="$2"
+  local current_dir="${start_dir}"
+
+  while true; do
+    local candidate_path="${current_dir}/node_modules/.bin/${executable_name}"
+    if [[ -x "${candidate_path}" ]]; then
+      printf '%s\n' "${candidate_path}"
+      return 0
+    fi
+
+    local parent_dir
+    parent_dir="$(dirname "${current_dir}")"
+    if [[ "${parent_dir}" == "${current_dir}" ]]; then
+      return 1
+    fi
+
+    current_dir="${parent_dir}"
+  done
+}
+
+resolve_executable() {
+  local executable_name="$1"
+  local resolved_path=""
+
+  if resolved_path="$(find_local_bin "${PWD}" "${executable_name}")"; then
+    printf '%s\n' "${resolved_path}"
+    return 0
+  fi
+
+  if resolved_path="$(command -v "${executable_name}" 2>/dev/null)"; then
+    printf '%s\n' "${resolved_path}"
+    return 0
+  fi
+
+  printf 'Required executable "%s" was not found in node_modules/.bin or PATH\n' "${executable_name}" >&2
+  exit 1
+}
+
+PI_BIN="$(resolve_executable pi)"
+AGENTATION_BIN="$(resolve_executable agentation)"
+
+exec env PI_AGENTATION_AGENTATION_BIN="${AGENTATION_BIN}" "${PI_BIN}" \
   -e "${PACKAGE_ROOT}/agentation.ts" \
-  --skill "${PACKAGE_ROOT}/skills/agentation-fix-loop/SKILL.md" \
+  --skill "${PACKAGE_ROOT}/skills/agentation/SKILL.md" \
   "$@"
