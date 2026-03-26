@@ -13,7 +13,6 @@ const PROJECT_ID_PATTERN = /^projectId=(?:"([^"\r\n]+)"|'([^'\r\n]+)')$/;
 const AGENTATION_SKILL_INVOCATION_PATTERN = new RegExp(`^${AGENTATION_SKILL_PROMPT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s+(.+))?$`);
 const AGENTATION_ACTION_PATTERN = /\bagentation\s+(ack|resolve|reply|dismiss)\s+([^\s]+)/g;
 const WATCH_TIMEOUT_SECONDS = "300";
-const WATCH_BATCH_WINDOW = "10";
 const LOOP_IDLE_WAIT_MS = 500;
 const WATCH_RETRY_DELAY_MS = 5_000;
 
@@ -491,7 +490,7 @@ export default function agentation(pi: ExtensionAPI): void {
       const commandArgs =
         nextBatchSource === "pending"
           ? ["pending", projectId, "--json"]
-          : ["watch", projectId, "--timeout", WATCH_TIMEOUT_SECONDS, "--batch-window", WATCH_BATCH_WINDOW, "--json"];
+          : ["watch", projectId, "--timeout", WATCH_TIMEOUT_SECONDS, "--json"];
       const commandOutcome = await execAgentationCommand(commandArgs, signal);
       if (!shouldContinueWatchLoop(generation, projectId) || signal.aborted) {
         return;

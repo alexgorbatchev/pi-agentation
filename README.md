@@ -25,7 +25,7 @@ See:
 - **Extension**
   - resolves the project for the current repo
   - runs `agentation pending` once on startup
-  - then keeps a live `agentation watch <project-id> --timeout 300 --batch-window 10 --json` loop running
+  - then keeps a live `agentation watch <project-id> --timeout 300 --json` loop running
   - dispatches exactly one skill run per fetched batch
   - pauses queue polling while the current batch is still in progress
 
