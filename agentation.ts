@@ -74,9 +74,14 @@ interface IAgentationUiState {
   source?: BatchSource;
 }
 
+interface IConnectionFailureState {
+  projectId: string;
+}
+
 interface ILoopRuntimeState {
   activeBatch: IActiveBatch | null;
   agentationExecutablePath: string | null;
+  connectionFailureState: IConnectionFailureState | null;
   currentContext: ExtensionContext | null;
   currentProjectId: string | null;
   hasNotifiedIncompleteBatch: boolean;
@@ -92,6 +97,7 @@ export default function agentation(pi: ExtensionAPI): void {
   const runtimeState: ILoopRuntimeState = {
     activeBatch: null,
     agentationExecutablePath: null,
+    connectionFailureState: null,
     currentContext: null,
     currentProjectId: null,
     hasNotifiedIncompleteBatch: false,
@@ -159,6 +165,39 @@ export default function agentation(pi: ExtensionAPI): void {
     ctx?.ui.notify(message, "error");
   };
 
+  const clearConnectionFailureState = (): void => {
+    runtimeState.connectionFailureState = null;
+  };
+
+  const reportConnectionRecovered = (projectId: string): void => {
+    const connectionFailureState = runtimeState.connectionFailureState;
+    if (connectionFailureState === null || connectionFailureState.projectId !== projectId) {
+      return;
+    }
+
+    runtimeState.connectionFailureState = null;
+    const message = `Agentation reconnected for ${projectId}. Resuming live watch.`;
+    console.info(message);
+    runtimeState.currentContext?.ui.notify(message, "info");
+  };
+
+  const reportWatchLoopFailure = (projectId: string, source: BatchSource, commandOutcome: CommandOutcome): void => {
+    const detail = formatCommandOutcome(commandOutcome);
+    const message = `Agentation ${source} failed for ${projectId}: ${detail}`;
+    if (!isConnectionFailureDetail(detail)) {
+      reportError(runtimeState.currentContext, message);
+      return;
+    }
+
+    const connectionFailureState = runtimeState.connectionFailureState;
+    if (connectionFailureState !== null && connectionFailureState.projectId === projectId) {
+      return;
+    }
+
+    runtimeState.connectionFailureState = { projectId };
+    reportError(runtimeState.currentContext, message);
+  };
+
   const stopWatchLoop = (): void => {
     runtimeState.watchGeneration += 1;
     runtimeState.watchAbortController?.abort();
@@ -169,6 +208,7 @@ export default function agentation(pi: ExtensionAPI): void {
   const resetRuntimeStateForSession = (ctx: ExtensionContext): void => {
     clearUiState(runtimeState.currentContext);
     stopWatchLoop();
+    clearConnectionFailureState();
     setCurrentContext(ctx);
     runtimeState.activeBatch = null;
     runtimeState.agentationExecutablePath = resolveAgentationExecutablePath(ctx.cwd);
@@ -501,15 +541,13 @@ export default function agentation(pi: ExtensionAPI): void {
           return;
         }
 
-        reportError(
-          runtimeState.currentContext,
-          `Agentation ${nextBatchSource} failed for ${projectId}: ${formatCommandOutcome(commandOutcome)}`
-        );
+        reportWatchLoopFailure(projectId, nextBatchSource, commandOutcome);
         await waitForDelay(WATCH_RETRY_DELAY_MS, signal);
         nextBatchSource = "pending";
         continue;
       }
 
+      reportConnectionRecovered(projectId);
       const pollResponse = parseAgentationPollResponse(commandOutcome.stdout);
       if (pollResponse === null) {
         reportError(
@@ -742,6 +780,7 @@ export default function agentation(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async () => {
     clearUiState(runtimeState.currentContext);
     stopWatchLoop();
+    clearConnectionFailureState();
     runtimeState.activeBatch = null;
     runtimeState.agentationExecutablePath = null;
     runtimeState.currentContext = null;
@@ -811,6 +850,21 @@ function formatCommandOutcome(commandOutcome: CommandOutcome): string {
   }
 
   return "unknown failure";
+}
+
+function isConnectionFailureDetail(detail: string): boolean {
+  const normalizedDetail = detail.toLowerCase();
+  return [
+    "broken pipe",
+    "connection refused",
+    "connection reset",
+    "dial tcp",
+    "i/o timeout",
+    "no such host",
+    "watch stream closed unexpectedly",
+  ].some((fragment) => {
+    return normalizedDetail.includes(fragment);
+  });
 }
 
 function normalizeProjectId(projectId: string): string | null {
