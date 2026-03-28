@@ -63,6 +63,14 @@ For each annotation in the provided batch, in order:
    - Inspect the relevant files
    - Infer the smallest correct change
 
+   When `annotation.kind === 'move'`:
+   - Treat `annotation.move` as the authoritative request payload.
+   - Read `move.items[*].sourceSelector`, `sourceParentSelector`, `sourceIndex`, `fromSourceFile`, and `rect`.
+   - Read `move.target.placement`, `targetSelector`, `containerSelector`, `targetIndex`, `toSourceFile`, and `rect`.
+   - Preserve `move.warnings`; unresolved source-file warnings do not cancel the request.
+   - Implement the change as a structural move in the source-of-truth child order.
+   - Do **not** default to CSS `transform`, absolute positioning, or CSS `order` unless the existing implementation already uses that property as the source of truth.
+
 3. **Implement the fix**
    - Keep changes minimal
    - Follow repo conventions

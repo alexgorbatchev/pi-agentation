@@ -434,7 +434,7 @@ export default function agentation(pi: ExtensionAPI): void {
   };
 
   const createBatchContextMessage = (activeBatch: IActiveBatch): string => {
-    return [
+    const contextLines = [
       "Agentation extension batch context:",
       `- projectId: ${activeBatch.projectId}`,
       `- source: ${activeBatch.source}`,
@@ -443,12 +443,18 @@ export default function agentation(pi: ExtensionAPI): void {
       "- Do NOT call `agentation pending`, `agentation watch`, `agentation start`, `agentation status`, or `agentation projects`.",
       "- Use `agentation ack`, `agentation resolve`, `agentation reply`, and `agentation dismiss` only for annotation IDs from this batch.",
       "- Run those Agentation action commands as separate bash commands so the extension can track batch completion correctly.",
-      "",
-      "Current batch JSON:",
-      "```json",
-      activeBatch.rawJson,
-      "```",
-    ].join("\n");
+    ];
+
+    if (hasMoveAnnotation(activeBatch.annotations)) {
+      contextLines.push(
+        "- This batch includes move annotations: treat `annotation.move` as the authoritative structural request and " +
+          "implement the move in source-of-truth child order; do not default to CSS `transform`, absolute " +
+          "positioning, or CSS `order` unless that is already the source-of-truth implementation pattern."
+      );
+    }
+
+    contextLines.push("", "Current batch JSON:", "```json", activeBatch.rawJson, "```");
+    return contextLines.join("\n");
   };
 
   const createNoBatchContextMessage = (projectId: string): string => {
@@ -969,6 +975,10 @@ function parseLoopInvocationProjectId(text: string): string | null {
   }
 
   return normalizeProjectId(projectId);
+}
+
+function hasMoveAnnotation(annotations: readonly IAgentationAnnotation[]): boolean {
+  return annotations.some((annotation) => annotation["kind"] === "move");
 }
 
 function extractAgentationActionsFromCommand(
