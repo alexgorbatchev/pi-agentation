@@ -300,11 +300,7 @@ export default function agentation(pi: ExtensionAPI): void {
   };
 
   const listKnownProjectIds = async (): Promise<{ errorMessage?: string; projectIds: string[] }> => {
-    let projectsResult = await execAgentationCommand(["projects", "--json"]);
-    if (!didCommandSucceed(projectsResult)) {
-      await execAgentationCommand(["start", "--background"]);
-      projectsResult = await execAgentationCommand(["projects", "--json"]);
-    }
+    const projectsResult = await execAgentationCommand(["projects", "--json"]);
 
     if (!didCommandSucceed(projectsResult)) {
       const failureMessage = formatCommandOutcome(projectsResult);
